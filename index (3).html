@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>BikeTracker</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0d1117">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #262c36;
+    --text: #c9d1d9;
+    --dim: #6e7681;
+    --ok: #3fb950;
+    --danger: #f85149;
+    --warn: #d29922;
+    --mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; justify-content: center; padding: 20px 14px; }
+  main { width: 100%; max-width: 420px; }
+
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  h1 { font-size: 18px; font-weight: 700; margin: 0; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); }
+  .dot.live { background: var(--ok); box-shadow: 0 0 0 0 rgba(63,185,80,.6); animation: pulse 2s infinite; }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(63,185,80,0); } 100% { box-shadow: 0 0 0 0 rgba(63,185,80,0); } }
+
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 0; overflow: hidden; margin-bottom: 12px; }
+  #mapFrame { width: 100%; height: 220px; border: 0; display: block; }
+
+  .info { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px;
+    border-bottom: 1px solid var(--border); }
+  .row:last-child { border-bottom: none; }
+  .label { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; }
+  .value { font-family: var(--mono); font-size: 15px; font-weight: 600; }
+  .value.ok { color: var(--ok); }
+  .value.danger { color: var(--danger); }
+  .value.warn { color: var(--warn); }
+  .value.dim { color: var(--dim); font-weight: 400; }
+
+  .hint { text-align: center; font-size: 12px; color: var(--dim); margin-top: 14px; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<main>
+  <header>
+    <h1>BikeTracker</h1>
+    <span class="dot" id="connDot"></span>
+  </header>
+
+  <div class="card" id="mapCard" style="display:none;">
+    <iframe id="mapFrame" loading="lazy" title="Position"></iframe>
+  </div>
+
+  <div class="info">
+    <div class="row"><span class="label">Position</span><span class="value dim" id="valGps">–</span></div>
+    <div class="row"><span class="label">Alarm</span><span class="value dim" id="valAlarm">–</span></div>
+    <div class="row"><span class="label">Akku</span><span class="value dim" id="valBat">–</span></div>
+    <div class="row"><span class="label">Bewegungssensor</span><span class="value dim" id="valMpu">–</span></div>
+    <div class="row"><span class="label">Mobilfunk</span><span class="value dim" id="valLte">–</span></div>
+  </div>
+
+  <p class="hint" id="hintText">Verbinde automatisch …</p>
+</main>
+
+<script>
+  const SERVICE_UUID = "12345678-1234-1234-1234-123456789abc";
+  const CHARACTERISTIC_UUID = "12345678-1234-1234-1234-123456789abd";
+  const TRUST_PASSWORT = "246810"; // muss zur Firmware passen
+
+  let bleDevice = null;
+  let bleCharacteristic = null;
+
+  const connDot = document.getElementById("connDot");
+  const mapCard = document.getElementById("mapCard");
+  const mapFrame = document.getElementById("mapFrame");
+  const hintText = document.getElementById("hintText");
+  let letzteGpsKoordinaten = null;
+
+  function parseStatus(text) {
+    const result = {};
+    text.split(";").forEach((teil) => {
+      const idx = teil.indexOf(":");
+      if (idx === -1) return;
+      result[teil.substring(0, idx).trim()] = teil.substring(idx + 1).trim();
+    });
+    return result;
+  }
+
+  function render(data) {
+    const valGps = document.getElementById("valGps");
+    if (data.GPS && data.GPS !== "keine Position") {
+      const frisch = data.GPSFIX === "JA";
+      valGps.textContent = data.GPS;
+      valGps.className = "value " + (frisch ? "ok" : "danger");
+
+      if (data.GPS !== letzteGpsKoordinaten) {
+        letzteGpsKoordinaten = data.GPS;
+        mapFrame.src = `https://maps.google.com/maps?q=${data.GPS}&z=16&output=embed`;
+      }
+      mapCard.style.display = "block";
+    } else {
+      valGps.textContent = "keine Position";
+      valGps.className = "value dim";
+      mapCard.style.display = "none";
+    }
+
+    const valAlarm = document.getElementById("valAlarm");
+    valAlarm.textContent = data.ALARM === "EIN" ? "SCHARF" : data.ALARM === "AUS" ? "AUS" : "–";
+    valAlarm.className = "value " + (data.ALARM === "EIN" ? "danger" : data.ALARM === "AUS" ? "ok" : "dim");
+
+    const valBat = document.getElementById("valBat");
+    if (data.BAT !== undefined) {
+      const p = parseInt(data.BAT, 10);
+      valBat.textContent = data.BAT;
+      valBat.className = "value " + (p <= 10 ? "danger" : p <= 25 ? "warn" : "ok");
+    }
+
+    const valMpu = document.getElementById("valMpu");
+    valMpu.textContent = data["SEN-MPU"] === "bereit" ? "BEREIT" : data["SEN-MPU"] === "nicht bereit" ? "FEHLER" : "–";
+    valMpu.className = "value " + (data["SEN-MPU"] === "bereit" ? "ok" : data["SEN-MPU"] === "nicht bereit" ? "danger" : "dim");
+
+    const valLte = document.getElementById("valLte");
+    valLte.textContent = data.LTE || "–";
+    valLte.className = "value dim";
+  }
+
+  async function sendeAuthCode() {
+    if (!bleCharacteristic) return;
+    try {
+      await bleCharacteristic.writeValue(new TextEncoder().encode("AUTH:" + TRUST_PASSWORT));
+    } catch (e) { console.error(e); }
+  }
+
+  function onNotify(event) {
+    render(parseStatus(new TextDecoder().decode(event.target.value)));
+  }
+
+  function onDisconnected() {
+    connDot.classList.remove("live");
+    bleCharacteristic = null;
+    hintText.textContent = "Getrennt - verbinde automatisch neu …";
+    versucheVerbindung();
+  }
+
+  async function verbindeMit(geraet) {
+    try {
+      bleDevice = geraet;
+      bleDevice.addEventListener("gattserverdisconnected", onDisconnected);
+
+      const server = await bleDevice.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      bleCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+      await bleCharacteristic.startNotifications();
+      bleCharacteristic.addEventListener("characteristicvaluechanged", onNotify);
+
+      await sendeAuthCode();
+
+      connDot.classList.add("live");
+      hintText.textContent = "Verbunden";
+      return true;
+    } catch (e) {
+      console.log("Verbindung fehlgeschlagen:", e.message);
+      return false;
+    }
+  }
+
+  async function versucheVerbindung() {
+    if (!navigator.bluetooth || !navigator.bluetooth.getDevices) {
+      hintText.textContent = "Automatische Verbindung in diesem Browser nicht möglich";
+      return;
+    }
+
+    while (!bleCharacteristic) {
+      const bekannte = await navigator.bluetooth.getDevices().catch(() => []);
+      const geraet = bekannte.find((d) => d.name === "BikeTracker") || bekannte[0];
+
+      if (!geraet) {
+        hintText.textContent = "Noch nicht gekoppelt - Erstkopplung einmalig nötig";
+        return;
+      }
+
+      const erfolg = await verbindeMit(geraet);
+      if (erfolg) return;
+
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+
+  versucheVerbindung();
+</script>
+
+</body>
+</html>
